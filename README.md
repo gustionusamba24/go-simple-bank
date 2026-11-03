@@ -1,1 +1,1 @@
-# Simple Bank Application
+Golang Simple Bank
