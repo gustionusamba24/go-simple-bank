@@ -1,13 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	mockdb "github.com/gustionusamba24/simple-bank/db/mock"
 	db "github.com/gustionusamba24/simple-bank/db/sqlc"
 	"github.com/gustionusamba24/simple-bank/util"
@@ -15,54 +18,52 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-func TestGetAccount(t *testing.T) {
+func TestGetAccountAPI(t *testing.T) {
+	account := randomAccount()
+
 	testCases := []struct {
 		name         string
 		accountID    int64
-		buildStub    func(store *mockdb.MockStore)
+		buildStubs   func(store *mockdb.MockStore)
 		expectStatus int
 	}{
 		{
 			name:      "OK",
-			accountID: 1,
-			buildStub: func(store *mockdb.MockStore) {
-				const id int64 = 1
+			accountID: account.ID,
+			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
-					GetAccount(gomock.Any(), gomock.Eq(id)).
-					Return(randomAccount(id), nil).
-					Times(1)
+					GetAccount(gomock.Any(), gomock.Eq(account.ID)).
+					Times(1).
+					Return(account, nil)
 			},
 			expectStatus: http.StatusOK,
 		},
 		{
 			name:      "NotFound",
-			accountID: 2,
-			buildStub: func(store *mockdb.MockStore) {
-				const id int64 = 2
+			accountID: account.ID,
+			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
-					GetAccount(gomock.Any(), gomock.Eq(id)).
-					Return(db.Account{}, sql.ErrNoRows).
-					Times(1)
+					GetAccount(gomock.Any(), gomock.Eq(account.ID)).
+					Times(1).
+					Return(db.Account{}, sql.ErrNoRows)
 			},
 			expectStatus: http.StatusNotFound,
 		},
 		{
 			name:      "InternalError",
-			accountID: 3,
-			buildStub: func(store *mockdb.MockStore) {
-				const id int64 = 3
+			accountID: account.ID,
+			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
-					GetAccount(gomock.Any(), gomock.Eq(id)).
-					Return(db.Account{}, sql.ErrConnDone).
-					Times(1)
+					GetAccount(gomock.Any(), gomock.Eq(account.ID)).
+					Times(1).
+					Return(db.Account{}, sql.ErrConnDone)
 			},
 			expectStatus: http.StatusInternalServerError,
 		},
 		{
-			name:      "BadRequest",
+			name:      "InvalidID",
 			accountID: 0,
-			buildStub: func(store *mockdb.MockStore) {
-				const id int64 = 3
+			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
 					GetAccount(gomock.Any(), gomock.Any()).
 					Times(0)
@@ -80,7 +81,7 @@ func TestGetAccount(t *testing.T) {
 
 			store := mockdb.NewMockStore(ctrl)
 			// build stub
-			tc.buildStub(store)
+			tc.buildStubs(store)
 
 			// start test server and send request
 			server := NewServer(store)
@@ -98,9 +99,107 @@ func TestGetAccount(t *testing.T) {
 
 }
 
-func randomAccount(id int64) db.Account {
+func TestCreateAccountAPI(t *testing.T) {
+	account := randomAccount()
+
+	testCases := []struct {
+		name         string
+		body         gin.H
+		buildStubs   func(store *mockdb.MockStore)
+		expectStatus int
+	}{
+		{
+			name: "OK",
+			body: gin.H{
+				"owner":    account.Owner,
+				"currency": account.Currency,
+			},
+			buildStubs: func(store *mockdb.MockStore) {
+				arg := db.CreateAccountParams{
+					Owner:    account.Owner,
+					Balance:  0,
+					Currency: account.Currency,
+				}
+
+				store.EXPECT().
+					CreateAccount(gomock.Any(), gomock.Eq(arg)).
+					Times(1).
+					Return(account, nil)
+			},
+			expectStatus: http.StatusOK,
+		},
+		{
+			name: "InvalidCurrency",
+			body: gin.H{
+				"owner":    account.Owner,
+				"currency": "invalid",
+			},
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					CreateAccount(gomock.Any(), gomock.Any()).
+					Times(0)
+			},
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name: "InvalidOwner",
+			body: gin.H{
+				"owner":    "",
+				"currency": account.Currency,
+			},
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					CreateAccount(gomock.Any(), gomock.Any()).
+					Times(0)
+			},
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name: "InternalError",
+			body: gin.H{
+				"owner":    account.Owner,
+				"currency": account.Currency,
+			},
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					CreateAccount(gomock.Any(), gomock.Any()).
+					Times(1).
+					Return(db.Account{}, sql.ErrConnDone)
+			},
+			expectStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for i := range testCases {
+		tc := testCases[i]
+
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			store := mockdb.NewMockStore(ctrl)
+			// build stub
+			tc.buildStubs(store)
+
+			server := NewServer(store)
+			recorder := httptest.NewRecorder()
+
+			data, err := json.Marshal(tc.body)
+			require.NoError(t, err)
+
+			url := "/accounts"
+			request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+			require.NoError(t, err)
+
+			server.router.ServeHTTP(recorder, request)
+			require.Equal(t, tc.expectStatus, recorder.Code)
+		})
+	}
+}
+
+func randomAccount() db.Account {
 	return db.Account{
-		ID:        id,
+		ID:        util.RandomInt(1, 1000),
 		Owner:     util.RandomOwner(),
 		Balance:   util.RandomMoney(),
 		Currency:  util.RandomCurrency(),
