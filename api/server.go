@@ -24,6 +24,8 @@ func NewServer(store db.Store) *Server {
 		// so it can be used for struct field
 		v.RegisterValidation("currency", validCurrency)
 	}
+	
+	router.POST("/users", server.createUser)
 
 	router.POST("/accounts", server.createAccount)
 	router.GET("/accounts/:id", server.getAccount)
